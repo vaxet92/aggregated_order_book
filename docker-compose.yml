@@ -1,0 +1,373 @@
+# One image, many processes
+# market, because a core serves exactly one InstrumentKey (spot and futures
+# BTCUSDT are different books that never merge).
+#
+#   md-core-spot / md-core-futures        Core + gRPC + the ZeroMQ ROUTER
+#                                         (ZmqCoreIngress), one per market
+#   md-provider-<venue>-<market>          one provider process per (venue,
+#                                         market); connects out to the exchange
+#                                         and dials its core's ROUTER over ipc://
+#   client-*                              the same client_app with different flags
+#
+#   docker compose up --build                      # spot only
+#   docker compose --profile futures up --build    # spot AND futures
+#
+# The first build is slow (~30-60 min): gRPC, Boost, OpenSSL and Protobuf all
+# compile from source inside the image. Subsequent builds reuse that layer.
+
+# Every service shares one build definition and one image tag. The build block
+# has to be repeated (via this anchor) rather than declared only on one
+# service: a service with `image:` but no `build:` is one compose tries to
+# PULL from a registry, which fails for an image that only exists locally.
+# With identical build config and tag, it is built once and the layer cache
+# makes the rest instant.
+x-app: &app
+  build:
+    context: .
+    dockerfile: Dockerfile
+    # EXPLICIT on purpose. With no target, Docker builds the LAST stage in the
+    # Dockerfile - so adding a stage below `runtime` would silently change what
+    # every service here runs. The test stages are placed above runtime as
+    # well; this line means neither ordering can break the default path.
+    target: runtime
+  image: consolidated-book:latest
+  # Never consult a registry: this image only ever exists locally, and the
+  # default policy produces a confusing "pull access denied" instead of just
+  # building it.
+  pull_policy: build
+  restart: unless-stopped
+
+services:
+  # ---- spot (always on) --------------------------------------------------
+  # --market=spot selects user_config/server_config_spot.json - baked into the
+  # image, and overlaid by the ./user_config bind mount below so an edit on
+  # the host takes effect on `docker compose restart <service>`, no rebuild.
+  # The md-sock volume is shared only so a core and its providers see the same
+  # ipc:// socket file - not for persistence.
+  md-core-spot:
+    <<: *app
+    container_name: md-core-spot
+    command: [
+        "./md_core_app",
+        "ipc:///run/md/spot.ipc",
+        "--market=spot"
+      ]
+    volumes:
+      - md-sock:/run/md
+      - ./user_config:/app/user_config:ro
+    ports:
+      # Published so native clients on the host can also reach it. The
+      # containerized clients use the compose network and the service name.
+      - "50051:50051"
+
+  # One provider per venue. depends_on only waits for the core to START, not
+  # for its ROUTER to be bound - that is fine: ZmqProviderSink's connect()
+  # queues to the HWM and delivers once the core binds, so a provider that
+  # comes up first loses nothing. A single venue crashing restarts just its
+  # own container; the core sees a ROUTER_NOTIFY disconnect, drops that venue
+  # from the merge, and re-registers it on reconnect.
+  md-provider-binance-spot:
+    <<: *app
+    container_name: md-provider-binance-spot
+    depends_on: [md-core-spot]
+    command: [
+      "./md_provider_app",
+      "binance",
+      "spot",
+      "ipc:///run/md/spot.ipc"
+    ]
+    volumes:
+      - md-sock:/run/md
+      - ./user_config:/app/user_config:ro
+
+  md-provider-bybit-spot:
+    <<: *app
+    container_name: md-provider-bybit-spot
+    depends_on: [md-core-spot]
+    command: [
+      "./md_provider_app",
+      "bybit",
+      "spot",
+      "ipc:///run/md/spot.ipc"
+    ]
+    volumes:
+      - md-sock:/run/md
+      - ./user_config:/app/user_config:ro
+
+  md-provider-okx-spot:
+    <<: *app
+    container_name: md-provider-okx-spot
+    depends_on: [md-core-spot]
+    command: [
+      "./md_provider_app",
+      "okx",
+      "spot",
+      "ipc:///run/md/spot.ipc"
+    ]
+    volumes:
+      - md-sock:/run/md
+      - ./user_config:/app/user_config:ro
+
+  # ---- futures (profile: futures) --------------------------------------------
+  # Its own core, its own gRPC port, its own ipc socket, its own config file
+  # (--market=futures -> user_config/server_config_futures.json). Nothing is
+  # shared with the spot side except the image, the md-sock volume (two socket
+  # files in it) and the same ./user_config mount - both markets read out of
+  # the one host directory, each its own file.
+  # `docker compose --profile futures up` brings this block up alongside
+  # spot; a plain `up` leaves it out.
+  md-core-futures:
+    <<: *app
+    container_name: md-core-futures
+    profiles: [futures]
+    command: [
+      "./md_core_app",
+      "ipc:///run/md/futures.ipc",
+      "--market=futures",
+      "--grpc_port=50052"
+    ]
+    volumes:
+      - md-sock:/run/md
+      - ./user_config:/app/user_config:ro
+    ports:
+      - "50052:50052"
+
+  md-provider-binance-futures:
+    <<: *app
+    container_name: md-provider-binance-futures
+    profiles: [futures]
+    depends_on: [md-core-futures]
+    command: [
+      "./md_provider_app",
+      "binance",
+      "futures",
+      "ipc:///run/md/futures.ipc"
+    ]
+    volumes:
+      - md-sock:/run/md
+      - ./user_config:/app/user_config:ro
+
+  md-provider-bybit-futures:
+    <<: *app
+    container_name: md-provider-bybit-futures
+    profiles: [futures]
+    depends_on: [md-core-futures]
+    command: [
+      "./md_provider_app",
+      "bybit",
+      "futures",
+      "ipc:///run/md/futures.ipc"
+    ]
+    volumes:
+      - md-sock:/run/md
+      - ./user_config:/app/user_config:ro
+
+  md-provider-okx-futures:
+    <<: *app
+    container_name: md-provider-okx-futures
+    profiles: [futures]
+    depends_on: [md-core-futures]
+    command: [
+      "./md_provider_app",
+      "okx",
+      "futures",
+      "ipc:///run/md/futures.ipc"
+    ]
+    volumes:
+      - md-sock:/run/md
+      - ./user_config:/app/user_config:ro
+
+  # ---- clients ------------------------------------------------------------
+  # All run the SAME binary (client_app) with different flags - the point of
+  # the flag-driven design. depends_on only waits for the core to START, not
+  # for gRPC to be listening: client_app reconnects with exponential backoff,
+  # so the first few seconds of connection failures in the logs are expected.
+  # --market is REQUIRED and has no default (client_common.cpp). Spot and
+  # futures are separate subscriptions, so the client never assumes one. Every
+  # service here omitted it and printed usage instead of subscribing - and with
+  # restart: unless-stopped above, that is a crashloop rather than a visible
+  # failure. The market is passed explicitly even though the --server host
+  # already implies it: the flag is what the SERVER validates the subscription
+  # against, and pointing a --market=spot client at the futures core should be
+  # rejected rather than silently served.
+  client-bbo:
+    <<: *app
+    container_name: client-bbo
+    depends_on: [md-core-spot]
+    command: [
+      "./client_app",
+      "--server=md-core-spot:50051",
+      "--market=spot",
+      "--bbo"
+    ]
+
+  client-volume-bands:
+    <<: *app
+    container_name: client-volume-bands
+    depends_on: [md-core-spot]
+    command: [
+      "./client_app",
+      "--server=md-core-spot:50051",
+      "--market=spot",
+      "--notional_band=1M,5M,10M,25M,50M"
+    ]
+
+  client-price-bands:
+    <<: *app
+    container_name: client-price-bands
+    depends_on: [md-core-spot]
+    command: [
+      "./client_app",
+      "--server=md-core-spot:50051",
+      "--market=spot",
+      "--price_band=50,100,200,500,1000"
+    ]
+
+  # The futures clients mirror the spot three exactly - same binary, same
+  # flags, only --server and --market differ. That symmetry IS the worked
+  # example: pointing a client at the other core costs two flags and no code.
+  #
+  # Thresholds deliberately match the spot clients', so the two markets are
+  # compared on identical bands rather than on bands that happen to differ.
+  client-bbo-futures:
+    <<: *app
+    container_name: client-bbo-futures
+    profiles: [futures]
+    depends_on: [md-core-futures]
+    command: [
+      "./client_app",
+      "--server=md-core-futures:50052",
+      "--market=futures",
+      "--bbo"
+    ]
+
+  client-volume-bands-futures:
+    <<: *app
+    container_name: client-volume-bands-futures
+    profiles: [futures]
+    depends_on: [md-core-futures]
+    command: [
+      "./client_app",
+      "--server=md-core-futures:50052",
+      "--market=futures",
+      "--notional_band=1M,5M,10M,25M,50M"
+    ]
+
+  client-price-bands-futures:
+    <<: *app
+    container_name: client-price-bands-futures
+    profiles: [futures]
+    depends_on: [md-core-futures]
+    command: [
+      "./client_app",
+      "--server=md-core-futures:50052",
+      "--market=futures",
+      "--price_band=50,100,200,500,1000"
+    ]
+
+  # ---- tests (profile: tests) ---------------------------------------------
+  # Run-to-completion services, not daemons. `docker compose up` and
+  # `docker compose build` do not see them at all: a compose profile gates the
+  # BUILD as well as the run, so the sanitizer images are never built unless
+  # asked for.
+  #
+  #   docker compose --profile tests run --rm unit-tests
+  #   docker compose --profile tests run --rm asan-tests
+  #   docker compose --profile tests run --rm tsan-tests
+  #
+  # DELIBERATELY NOT `<<: *app`. The anchor carries restart: unless-stopped,
+  # which for a test container means a PASSING run (exit 0) is restarted
+  # forever. Each one repeats the three build keys instead and pins
+  # restart: "no". They also need their own image tags - same Dockerfile, same
+  # context, different target, so a shared tag would have them overwrite each
+  # other.
+  #
+  # Working directory is /src (the builder's), so the build trees are right
+  # there. These stages keep the builder filesystem rather than the slim
+  # runtime image, because ctest needs cmake and the build tree.
+
+  # No compilation of its own: the Release builder already built unit_tests
+  # (BUILD_TESTS defaults ON), so this stage is `FROM builder` plus a command.
+  # If the main image is already built, this starts in seconds.
+  unit-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: tests
+    image: consolidated-book-tests:latest
+    pull_policy: build
+    profiles: [tests]
+    restart: "no"
+    working_dir: /src
+    command: ["ctest", "--test-dir", "build", "--output-on-failure"]
+
+  # ASan + UBSan. Both sanitizer services need the two security relaxations
+  # below: the sanitizer runtimes map a large fixed shadow region and call
+  # personality() to disable ASLR, and Docker's default seccomp profile blocks
+  # that - the failure is an immediate "unexpected memory mapping" at startup,
+  # not a test failure.
+  #
+  # NOTE, and it differs from the local build: LeakSanitizer is unsupported on
+  # macOS arm64, so `cmake --preset vcpkg-arm64-asan` finds memory ERRORS but
+  # never leaks. Here on Linux it is ON by default, so this run checks
+  # something the local one cannot. It may therefore report leaks inside the
+  # uninstrumented vcpkg libraries. Leak detection is left ON rather than
+  # quietly disabled; to see memory errors only:
+  #   docker compose --profile tests run --rm \
+  #       -e ASAN_OPTIONS=detect_leaks=0 asan-tests
+  #
+  # allow_user_poisoning=0 below: our ASan-instrumented objects (the generated
+  # aggregator.pb.cc/.grpc.pb.cc and aggregator_service.cpp) compile the Abseil
+  # headers with ABSL_HAVE_ADDRESS_SANITIZER defined and poison the unused bytes
+  # of inline container storage; the vcpkg protobuf/abseil/gRPC .so files are
+  # built WITHOUT ASan and move/read that storage without unpoisoning it. The
+  # poison/unpoison imbalance surfaces as a bogus "use-after-poison" in the five
+  # RoutingTest cases (the only suite that runs a real in-process gRPC server).
+  # The option makes __asan_poison_memory_region a no-op; our own code never
+  # calls it, so no coverage of ours is lost. Local macOS ASan does not hit this
+  # because its Abseil build lands the annotation consistently on both sides.
+  asan-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder-asan
+    image: consolidated-book-asan:latest
+    pull_policy: build
+    profiles: [tests]
+    restart: "no"
+    working_dir: /src
+    security_opt:
+      - seccomp:unconfined
+    cap_add:
+      - SYS_PTRACE
+    environment:
+      ASAN_OPTIONS: allow_user_poisoning=0
+    command: ["ctest", "--test-dir", "build_asan", "--output-on-failure"]
+
+  # TSan. Runs under ctest rather than the gtest binary directly BECAUSE
+  # tests/unit_tests/CMakeLists.txt attaches
+  # TSAN_OPTIONS=suppressions=/src/tsan.supp as a ctest property when
+  # SANITIZER=thread. Calling ./unit_tests by hand drops that and reports
+  # gRPC's ThreadManager teardown - an uninstrumented-library false positive -
+  # as a real race.
+  tsan-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder-tsan
+    image: consolidated-book-tsan:latest
+    pull_policy: build
+    profiles: [tests]
+    restart: "no"
+    working_dir: /src
+    security_opt:
+      - seccomp:unconfined
+    cap_add:
+      - SYS_PTRACE
+    command: ["ctest", "--test-dir", "build_tsan", "--output-on-failure"]
+
+# Shared only so a core and its providers see the same ipc:// socket file (two
+# files live here, spot.ipc and futures.ipc). Not for persistence - /run is
+# runtime state and each socket is recreated on its core's start.
+volumes:
+  md-sock:

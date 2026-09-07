@@ -1,0 +1,50 @@
+# The host build tree must never enter the image: it holds macOS/arm64 objects
+# and a vcpkg_installed/ built for the host triplet. Copying it in would both
+# bloat the context by gigabytes and risk CMake reusing host artifacts.
+# Both spellings: the presets in CMakePresets.json create build_asan/ and
+# build_tsan/ with UNDERSCORES, and only the hyphenated names were listed here
+# - so the two sanitizer trees (gigabytes of host objects) were being sent to
+# the daemon on every build. They never entered the image, because the
+# Dockerfile copies named source directories only, but they cost context
+# transfer time - and the test stages below now create identically named
+# directories INSIDE the image, where a host copy would be actively harmful.
+build/
+build-debug/
+build_debug/
+build-asan/
+build_asan/
+build-tsan/
+build_tsan/
+build-bench/
+cmake-build-*/
+out/
+vcpkg_installed/
+
+# CMake scratch
+CMakeCache.txt
+CMakeFiles/
+CMakePresets.json
+cmake_install.cmake
+compile_commands.json
+CTestTestfile.cmake
+.cmake/
+.cache/
+
+# Docs and VCS - not needed to compile, and they change often enough to
+# invalidate layers for no reason.
+.git/
+.github/
+docs/
+*.md
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Build outputs
+*.o
+*.a
+*.so
+*.dylib

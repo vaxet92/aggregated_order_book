@@ -1,0 +1,166 @@
+syntax = "proto3";
+
+package market_data.wire;
+
+service Aggregator {
+  rpc Subscribe(SubscribeRequest) returns (stream Update);
+}
+
+enum Venue {
+  VENUE_UNSPECIFIED = 0;
+  BINANCE = 1;
+  BYBIT = 2;
+  OKX = 3;
+}
+
+// Spot and futures are DIFFERENT MARKETS that happen to share a symbol name.
+// A subscription names exactly one of them: (symbol, market) is the
+// subscription key, the wire form of the domain's InstrumentKey.
+//
+// MARKET_UNSPECIFIED is not a default, it is an ERROR. A proto3 enum
+// field has no presence, so "the client forgot this field" and "the client
+// chose value 0" are the SAME BYTES on the wire. If 0 meant SPOT, a client
+// that forgot would be silently subscribed to spot and never find out. It is
+// rejected at Subscribe instead, so the mistake is loud.
+enum MarketType {
+  MARKET_UNSPECIFIED = 0;
+  SPOT = 1;
+  FUTURES = 2;
+}
+
+// PROTOCOL CONSTANT: every scaled value in this file - in both directions -
+// uses a fixed scale of 1e8. A price of 78310.10 is 7831010000000; a notional
+// of 1,000,000 USDT is 100000000000000.
+//
+// Responses declare their scale explicitly (Update.price_scale/qty_scale)
+// so a client needs no out-of-band knowledge to READ one. Requests have no
+// such field, so this comment is the contract for the request direction: a
+// client sending notional_bands must scale by 1e8 itself.
+//
+// The asymmetry is deliberate but not ideal. The alternative - a
+// notional_scale field on VolumeBandsRequest, letting the client declare what
+// scale its own numbers use - is the correct answer if per-instrument scales
+// ever differ. With one instrument and one scale, that field would be
+// ceremony; this comment is the honest minimum until it isn't.
+message VolumeBandsRequest {
+  repeated uint64 notional_bands = 1;  // quote currency x 1e8; empty = server defaults
+}
+
+// bps needs no scale - these are plain basis points, 50 means 0.50%.
+message PriceBandsRequest {
+  repeated uint32 bps_bands = 1;       // empty = server defaults
+}
+
+// Feeds are selected by PRESENCE, not by an enum list: a `Feed` enum plus
+// separate parameter arrays made an empty array ambiguous ("use defaults" vs
+// "not subscribed"). With optional sub-messages, presence means subscribed
+// and an empty array inside means defaults - no collision.
+//
+// `optional` cannot be applied to a `repeated` field in proto3, which is why
+// the arrays are wrapped in a message rather than living here directly.
+message SubscribeRequest {
+  string symbol = 1;                              // "BTCUSDT"
+  bool bbo = 2;                                   // subscribe to BBO
+  optional VolumeBandsRequest volume_bands = 3;   // PRESENT = subscribed
+  optional PriceBandsRequest price_bands = 4;     // PRESENT = subscribed
+
+  // REQUIRED. Together with `symbol` this selects the book. UNSPECIFIED is
+  // rejected with INVALID_ARGUMENT - see the enum for why it cannot default.
+  MarketType market = 5;
+}
+
+// All prices/quantities/notionals are unsigned across the wire, matching
+// PriceTicks/QtyUnits in the domain types - none of them can be negative.
+message VenueQuote {
+  Venue venue = 1;
+  uint64 qty = 2;
+}
+
+message ConsolidatedPriceLevel {
+  uint64 price = 1;
+  uint64 total_qty = 2;
+  repeated VenueQuote venues = 3;  // only venues quoting exactly this price
+}
+
+message Bbo {
+  ConsolidatedPriceLevel best_bid = 1;
+  ConsolidatedPriceLevel best_ask = 2;
+  bool crossed = 3;
+}
+
+message VolumeBandResult {
+  uint64 notional_threshold = 1;  // which band this result is for, e.g. 1_000_000 scaled
+  uint64 vwap = 2;
+  uint64 worst_price = 3;         // last level touched
+  uint64 filled_notional = 4;
+  uint64 filled_qty = 5;
+  bool insufficient_depth = 6;
+  uint32 level_count = 7;         // levels consumed (the partial one counts)
+}
+
+message VolumeBands {
+  repeated VolumeBandResult bid_bands = 1;
+  repeated VolumeBandResult ask_bands = 2;
+
+  // Top of the merged book, carried once rather than per band - it is the
+  // same reference for all of them. A VWAP alone says little; measured
+  // against the best price it becomes slippage, which is the question
+  // actually being asked ("what does filling 1M cost me versus the top?").
+  // 0 when that side of the book is empty.
+  uint64 best_bid = 3;
+  uint64 best_ask = 4;
+}
+
+message PriceBandResult {
+  uint32 bps_threshold = 1;
+  uint64 cum_qty = 2;
+  uint64 cum_notional = 3;
+  uint64 vwap = 4;
+  uint32 level_count = 5;
+  uint64 limit_price = 6;
+
+  // The walk hit the end of the merged book before reaching limit_price, so
+  // cum_qty/cum_notional are a LOWER BOUND, not the full liquidity within
+  // the band. Without this a truncated result is indistinguishable from a
+  // complete one - and on BTCUSDT the wider bands are always truncated,
+  // since no venue publishes anything close to 10% of depth.
+  bool insufficient_depth = 7;
+}
+
+message PriceBands {
+  repeated PriceBandResult bid_bands = 1;
+  repeated PriceBandResult ask_bands = 2;
+}
+
+// that gap is visible to clients in the worst way. A stale venue is
+// silently dropped from the merged book, and the client has no field telling
+// it that happened - so a book that thinned from three venues to two looks
+// identical to a book where two venues simply had no depth at that price.
+message VenueStatus {
+  Venue venue = 1;
+  bool contributed = 2;
+  uint64 last_seq = 3;
+  uint32 age_ms = 4;
+  int32 drift_ms = 5;
+}
+
+message Update {
+  uint64 seq = 1;                       // server-side monotonic; gaps = conflation
+  uint64 server_ts_ns = 2;
+  string symbol = 3;
+  repeated VenueStatus venues = 4;
+  uint32 price_scale = 5;               // exponent: divide price fields by 10^price_scale
+  uint32 qty_scale = 6;                 // exponent: divide qty fields by 10^qty_scale
+
+  // Which market this update is FOR. Constant for the life of a stream, but
+  // sent per message for the same reason `symbol` is: a captured message has
+  // to be self-describing, and "BTCUSDT" alone cannot tell a spot book from a
+  // futures one.
+  MarketType market = 7;
+
+  oneof payload {
+    Bbo bbo = 10;
+    VolumeBands volume_bands = 11;
+    PriceBands price_bands = 12;
+  }
+}

@@ -1,0 +1,42 @@
+# ThreadSanitizer suppressions.
+#
+# Wired into the tsan build only, via gtest_discover_tests(... PROPERTIES
+# ENVIRONMENT TSAN_OPTIONS=suppressions=...) in tests/unit_tests/CMakeLists.txt.
+#
+# RULE: nothing in this file may name a symbol from our own code
+# (market_data::, md_core, md_wire, aggregator, client). Our code is the
+# signal TSan exists to give us. Every entry here is an uninstrumented
+# third-party library whose internals TSan cannot see accurately, which
+# DESIGN.md section 10 calls out explicitly for boost, gRPC and OpenSSL.
+
+# gRPC ThreadManager tears down its worker-thread list during
+# grpc::Server::Shutdown()/~Server(). TSan reports a read/write race on the
+# std::list node count between two gRPC-internal threads swapping the list.
+# gRPC is linked from vcpkg without instrumentation, so its own happens-before
+# edges (the ThreadManager mutex) are invisible and this is a false positive.
+# Seen on RoutingTest.* (5 tests), all of which stand up a real gRPC server.
+race:grpc::ThreadManager
+
+# The rest of gRPC (C++ layer, C core, and the posix EventEngine) plus the
+# Abseil it is built on. All linked from vcpkg WITHOUT instrumentation, so
+# their internal synchronisation is invisible to TSan: the EventEngine
+# run-queue, Abseil's SpinLock / Waiter / status refcount, and the gpr
+# allocators all establish happens-before that TSan cannot see, so any race
+# confined to their frames is a false positive - the same basis as the
+# ThreadManager entry above. These fire on RoutingTest.* once frames are
+# symbolised (grpc 1.81's EventEngine spins up "event_engine" /
+# "grpc_global_tim" threads that touch AnyInvocable closures and a
+# flat_hash_map across threads).
+race:grpc::
+race:grpc_core::
+race:grpc_event_engine::
+race:gpr_
+race:absl::
+
+# libzmq is statically linked and uninstrumented. Its lock-free SPSC command
+# and message pipes (ypipe_t / yqueue_t) hand objects from the application
+# thread to the ZMQbg/IO background thread through atomics TSan cannot model,
+# and msg_t init/close runs on the message handed across. TSan then reports
+# the queued command_t / msg_t payload as raced with no happens-before edge.
+# Seen on every ZmqProviderSink / ZmqCoreIngress test.
+race:zmq::

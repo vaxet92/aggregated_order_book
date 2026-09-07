@@ -1,0 +1,99 @@
+# Build directories
+build/
+build-debug/
+build-bench/
+build_tsan/
+build_asan/
+cmake-build-*/
+out/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+CTestTestfile.cmake
+compile_commands.json
+
+# Ninja build files
+.ninja_deps
+.ninja_log
+
+.cmake/
+.cmake/presets.json
+.cache/
+
+.vscode/
+.claude/
+CLAUDE.md
+
+# Personal interview-prep notes, not part of the shipped project
+docs/DEBRIEF.md
+
+# Personal benchmark log, not part of the shipped project
+becnhmark_results.md
+
+# vcpkg
+vcpkg_installed/
+
+# Compiled Object files
+*.o
+*.obj
+*.ko
+*.elf
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Compiled Static libraries
+*.a
+*.lib
+*.la
+*.lo
+
+# Executables
+*.exe
+*.out
+*.app
+*.i*86
+*.x86_64
+*.hex
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# IDE and Editor files
+.vscode/
+.cursor/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing
+Testing/
+CTestTestfile.cmake
+
+# Coverage
+*.gcda
+*.gcno
+*.gcov
+
+# Logs
+*.log
+
+# Package manager
+conan.lock
+conanbuildinfo.*
+conaninfo.txt
+graph_info.json

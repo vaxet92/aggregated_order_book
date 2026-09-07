@@ -1,0 +1,53 @@
+{
+    "binance": {
+        "spot": {
+            "ws_host": "stream.binance.com",
+            "ws_port": "443",
+            "depth_path": "/ws/{symbol}@depth@100ms",
+            "bbo_path": "/ws/{symbol}@bookTicker",
+            "rest_host": "api.binance.com",
+            "rest_port": "443",
+            "rest_depth_path": "/api/v3/depth"
+        },
+        "futures": {
+            "ws_host": "fstream.binance.com",
+            "ws_port": "443",
+            "depth_path": "/ws/{symbol}@depth@100ms",
+            "bbo_path": "/ws/{symbol}@bookTicker",
+            "rest_host": "fapi.binance.com",
+            "rest_port": "443",
+            "rest_depth_path": "/fapi/v1/depth"
+        }
+    },
+    "bybit": {
+        "spot": {
+            "ws_host": "stream.bybit.com",
+            "ws_port": "443",
+            "depth_path": "/v5/public/spot",
+            "bbo_path": "/v5/public/spot"
+        },
+        "futures": {
+            "ws_host": "stream.bybit.com",
+            "ws_port": "443",
+            "depth_path": "/v5/public/linear",
+            "bbo_path": "/v5/public/linear"
+        }
+    },
+    "okx": {
+        "spot": {
+            "ws_host": "ws.okx.com",
+            "ws_port": "443",
+            "depth_path": "/ws/v5/public",
+            "bbo_path": "/ws/v5/public"
+        },
+        "futures": {
+            "ws_host": "ws.okx.com",
+            "ws_port": "443",
+            "depth_path": "/ws/v5/public",
+            "bbo_path": "/ws/v5/public",
+            "rest_host": "www.okx.com",
+            "rest_port": "443",
+            "rest_instruments_path": "/api/v5/public/instruments"
+        }
+    }
+}

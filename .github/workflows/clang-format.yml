@@ -1,0 +1,28 @@
+name: clang-format
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  clang-format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned version: clang-format's formatting decisions change between
+      # releases, so CI must use a fixed version rather than "whatever the
+      # runner has today". Installed from the pip wheel because Ubuntu's apt
+      # does not package clang-format 22. A contributor's local clang-format
+      # (e.g. a Homebrew 22.1.x patch release) may differ slightly - CI is
+      # the source of truth for this check.
+      - name: Install clang-format 22
+        run: pipx install clang-format==22.1.8
+
+      # root_certificates.hpp is vendored Boost.Beast example code, not
+      # project code - excluded from our style rules (see CLAUDE.md 3.1).
+      - name: Check formatting
+        run: |
+          git ls-files '*.h' '*.hpp' '*.cc' '*.cpp' \
+            | grep -v 'md_provider/ws/root_certificates.hpp' \
+            | xargs clang-format --style=file --dry-run -Werror
